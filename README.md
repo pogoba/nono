@@ -114,7 +114,13 @@ nono run --env-credential openai_api_key --allow-cwd -- my-agent
 
 Instruction files (SKILLS.md, CLAUDE.md, AGENT.MD) and associated artifacts such as scripts are a supply chain attack vector. nono cryptographically signs and verifies them using Sigstore attestation with DSSE envelopes and in-toto / SLSA style statements. It supports keyed signing (system keystore) and keyless signing (OIDC via GitHub Actions + Fulcio + Rekor). Upon execution, nono verifies the signature, checks the signing certificate against trusted roots, and validates the statement predicates (e.g. signed within the last 30 days, signed by a trusted maintainer).
 
-Use the [nono-attest](https://github.com/marketplace/actions/nono-attest) GitHub Action for signing direct within GitGub workflows. Users are then able to attest the files originate from the expected repository and branch, and were signed by a trusted maintainer.
+<p align="center">
+  <a href="https://github.com/marketplace/actions/nono-attest">
+    <img src="https://img.shields.io/badge/GitHub_Action-nono--attest-2088FF?style=for-the-badge&logo=github-actions&logoColor=white" alt="nono-attest GitHub Action"/>
+  </a>
+</p>
+
+Sign instruction files directly within GitHub Actions workflows. Users can then verify that files originate from the expected repository and branch, signed by a trusted maintainer.
 
 ### Network Filtering
 
