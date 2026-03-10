@@ -80,7 +80,7 @@ DENIED
   Details: Path matches sensitive pattern 'Block access to cryptographic keys, tokens, and cloud credentials'. Access blocked by security policy.
 ```
 
-Built-in profiles for [Claude Code](https://docs.nono.sh/clients/claude-code), [Codex](https://docs.nono.sh/clients/codex), [OpenCode](https://docs.nono.sh/clients/opencode), and [OpenClaw](https://docs.nono.sh/clients/openclaw) — or define your own with custom permissions.
+Built-in profiles for [Claude Code](https://docs.nono.sh/cli/clients/claude-code), [Codex](https://docs.nono.sh/cli/clients/codex), [OpenCode](https://docs.nono.sh/cli/clients/opencode), and [OpenClaw](https://docs.nono.sh/cli/clients/openclaw) — or define your own with custom permissions.
 
 ## Library
 
@@ -158,7 +158,7 @@ nono run --env-credential-map 'apple-password://github.com/alice@example.com' GI
 
 ### Agent SKILL Provenance and Supply Chain Security
 
-Instruction files (SKILLS.md, CLAUDE.md, AGENT.MD) and associated artifacts such as scripts are a supply chain attack vector. nono cryptographically signs and verifies them using Sigstore attestation with DSSE envelopes and in-toto / SLSA style statements. It supports keyed signing (system keystore) and keyless signing (OIDC via GitHub Actions + Fulcio + Rekor). Upon execution, nono verifies the signature, checks the signing certificate against trusted roots, and validates the statement predicates (e.g. signed within the last 30 days, signed by a trusted maintainer).
+Instruction files (SKILLS.md, CLAUDE.md, AGENTS.md, AGENT.MD) and associated artifacts such as scripts are a supply chain attack vector. nono cryptographically signs and verifies them using Sigstore attestation with DSSE envelopes and in-toto / SLSA style statements. It supports keyed signing (system keystore) and keyless signing (OIDC via GitHub Actions + Fulcio + Rekor). Upon execution, nono verifies the signature, checks the signing certificate against trusted roots, and validates the statement predicates (e.g. signed within the last 30 days, signed by a trusted maintainer).
 
 <p align="center">
   <a href="https://github.com/marketplace/actions/nono-attest">
@@ -184,7 +184,7 @@ nono run --profile claude-code --net-allow -- claude
 On Linux, seccomp user notification intercepts syscalls when the agent needs access outside its sandbox. The supervisor prompts the user, then injects the file descriptor directly — the agent never executes its own `open()`. Sensitive paths are never-grantable regardless of approval.
 
 ```bash
-nono run --rollback --allow-cwd -- claude
+nono run --rollback --supervised --profile claude-code --allow-cwd -- claude
 ```
 
 ### Undo and Snapshots
@@ -193,7 +193,7 @@ Content-addressable snapshots of your working directory taken before and during 
 
 ```bash
 # Zero-flag usage — auto-excludes large/regenerable directories
-nono run --rollback --allow-cwd -- npm test
+nono run --rollback --allow . -- npm test
 
 # Force-include an auto-excluded directory
 nono run --rollback --rollback-include target -- cargo build
@@ -202,7 +202,7 @@ nono run --rollback --rollback-include target -- cargo build
 nono run --rollback --rollback-exclude vendor -- go test ./...
 
 # Disable rollback entirely
-nono run --no-rollback --allow-cwd -- npm test
+nono run --no-rollback --allow . -- npm test
 
 nono rollback list
 nono rollback restore
@@ -265,11 +265,11 @@ brew install nono
 
 ### Linux
 
-See the [Installation Guide](https://docs.nono.sh/installation) for prebuilt binaries and package manager instructions.
+See the [Installation Guide](https://docs.nono.sh/cli/getting_started/installation) for prebuilt binaries and package manager instructions.
 
 ### From Source
 
-See the [Development Guide](https://docs.nono.sh/development) for building from source.
+See the [Development Guide](https://docs.nono.sh/cli/development/index) for building from source.
 
 ## Supported Clients
 
@@ -277,12 +277,12 @@ nono ships with built-in profiles for popular AI coding agents. Each profile def
 
 | Client | Profile | Docs |
 |--------|---------|------|
-| **Claude Code** | `claude-code` | [Guide](https://docs.nono.sh/clients/claude-code) |
-| **Codex** | `codex` | [Guide](https://docs.nono.sh/clients/codex) |
-| **OpenCode** | `opencode` | [Guide](https://docs.nono.sh/clients/opencode) |
-| **OpenClaw** | `openclaw` | [Guide](https://docs.nono.sh/clients/openclaw) |
+| **Claude Code** | `claude-code` | [Guide](https://docs.nono.sh/cli/clients/claude-code) |
+| **Codex** | `codex` | [Guide](https://docs.nono.sh/cli/clients/codex) |
+| **OpenCode** | `opencode` | [Guide](https://docs.nono.sh/cli/clients/opencode) |
+| **OpenClaw** | `openclaw` | [Guide](https://docs.nono.sh/cli/clients/openclaw) |
 
-Custom profiles can [extend built-in ones](https://docs.nono.sh/profiles) with `"extends": "claude-code"` to inherit all settings and add overrides. nono is agent-agnostic and works with any CLI command. See the [full documentation](https://docs.nono.sh) for usage details, configuration, and integration guides.
+Custom profiles can [extend built-in ones](https://docs.nono.sh/cli/features/profiles-groups) with `"extends": "claude-code"` to inherit all settings and add overrides. nono is agent-agnostic and works with any CLI command. See the [full documentation](https://docs.nono.sh) for usage details, configuration, and integration guides.
 
 ## Projects using nono
 
