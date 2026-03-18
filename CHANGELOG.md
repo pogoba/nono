@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.19.0] - 2026-03-18
+
+### Bug Fixes
+
+- *(deny)* Canonicalize parent directories in deny access rules (#393) ([#393](https://github.com/always-further/nono/pull/393))
+
+
+### Dependencies
+
+- *(deps)* Bump tempfile from 3.26.0 to 3.27.0 (#398) ([#398](https://github.com/always-further/nono/pull/398))
+
+- *(deps)* Bump sigstore-sign from 0.6.3 to 0.6.4 (#397) ([#397](https://github.com/always-further/nono/pull/397))
+
+- *(deps)* Bump clap from 4.5.60 to 4.6.0 (#396) ([#396](https://github.com/always-further/nono/pull/396))
+
+- *(deps)* Bump actions/download-artifact from 8.0.0 to 8.0.1 (#395) ([#395](https://github.com/always-further/nono/pull/395))
+
+- *(deps)* Bump softprops/action-gh-release from 2.5.0 to 2.6.1 (#394) ([#394](https://github.com/always-further/nono/pull/394))
+
+
+### Features
+
+- *(sandbox)* Add IpcMode capability for POSIX semaphores (macOS Seatbelt) (#412) ([#412](https://github.com/always-further/nono/pull/412))
+
+- *(learn)* Add macOS network tracing via nettop (#403) ([#403](https://github.com/always-further/nono/pull/403))
+
+- Add linux-arm64 (#402) ([#402](https://github.com/always-further/nono/pull/402))
+
 ## [0.18.0] - 2026-03-16
 
 ### Bug Fixes
