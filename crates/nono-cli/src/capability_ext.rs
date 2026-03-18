@@ -318,16 +318,18 @@ impl CapabilitySetExt for CapabilitySet {
         if profile.network.block {
             caps.set_network_blocked(true);
         } else if profile.network.has_proxy_flags() {
+            let bind_ports =
+                crate::merge_dedup_ports(&profile.network.listen_port, &args.allow_bind);
             // Profile requests proxy mode; port 0 is a placeholder.
-            // bind_ports come from CLI args (--allow-bind).
+            // bind_ports come from profile listen_port plus CLI --listen-port.
             caps = caps.set_network_mode(nono::NetworkMode::ProxyOnly {
                 port: 0,
-                bind_ports: args.allow_bind.clone(),
+                bind_ports,
             });
         }
 
         // Localhost IPC ports from profile
-        for port in &profile.network.port_allow {
+        for port in &profile.network.open_port {
             caps.add_localhost_port(*port);
         }
 

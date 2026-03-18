@@ -551,10 +551,12 @@ fn cmd_show(args: PolicyShowArgs) -> Result<()> {
     let net = &profile.network;
     let has_net = net.block
         || net.resolved_network_profile().is_some()
-        || !net.proxy_allow.is_empty()
-        || !net.proxy_credentials.is_empty()
-        || !net.port_allow.is_empty()
-        || net.external_proxy.is_some();
+        || !net.allow_domain.is_empty()
+        || !net.credentials.is_empty()
+        || !net.open_port.is_empty()
+        || !net.listen_port.is_empty()
+        || net.upstream_proxy.is_some()
+        || !net.upstream_bypass.is_empty();
 
     if has_net {
         println!();
@@ -569,33 +571,48 @@ fn cmd_show(args: PolicyShowArgs) -> Result<()> {
                 theme::fg(np, t.text)
             );
         }
-        if !net.proxy_allow.is_empty() {
+        if !net.allow_domain.is_empty() {
             println!(
                 "    {}: {}",
-                theme::fg("proxy_allow", t.subtext),
-                net.proxy_allow.join(", ")
+                theme::fg("allow_domain", t.subtext),
+                net.allow_domain.join(", ")
             );
         }
-        if !net.proxy_credentials.is_empty() {
+        if !net.credentials.is_empty() {
             println!(
                 "    {}: {}",
-                theme::fg("proxy_credentials", t.subtext),
-                net.proxy_credentials.join(", ")
+                theme::fg("credentials", t.subtext),
+                net.credentials.join(", ")
             );
         }
-        if !net.port_allow.is_empty() {
-            let ports: Vec<String> = net.port_allow.iter().map(|p| p.to_string()).collect();
+        if !net.open_port.is_empty() {
+            let ports: Vec<String> = net.open_port.iter().map(|p| p.to_string()).collect();
             println!(
                 "    {}: {}",
-                theme::fg("port_allow", t.subtext),
+                theme::fg("open_port", t.subtext),
                 ports.join(", ")
             );
         }
-        if let Some(ref ep) = net.external_proxy {
+        if !net.listen_port.is_empty() {
+            let ports: Vec<String> = net.listen_port.iter().map(|p| p.to_string()).collect();
             println!(
                 "    {}: {}",
-                theme::fg("external_proxy", t.subtext),
+                theme::fg("listen_port", t.subtext),
+                ports.join(", ")
+            );
+        }
+        if let Some(ref ep) = net.upstream_proxy {
+            println!(
+                "    {}: {}",
+                theme::fg("upstream_proxy", t.subtext),
                 theme::fg(ep, t.text)
+            );
+        }
+        if !net.upstream_bypass.is_empty() {
+            println!(
+                "    {}: {}",
+                theme::fg("upstream_bypass", t.subtext),
+                net.upstream_bypass.join(", ")
             );
         }
     }
@@ -717,10 +734,12 @@ fn profile_to_json(
     val["network"] = serde_json::json!({
         "block": profile.network.block,
         "network_profile": profile.network.resolved_network_profile(),
-        "proxy_allow": profile.network.proxy_allow,
-        "proxy_credentials": profile.network.proxy_credentials,
-        "port_allow": profile.network.port_allow,
-        "external_proxy": profile.network.external_proxy,
+        "allow_domain": profile.network.allow_domain,
+        "credentials": profile.network.credentials,
+        "open_port": profile.network.open_port,
+        "listen_port": profile.network.listen_port,
+        "upstream_proxy": profile.network.upstream_proxy,
+        "upstream_bypass": profile.network.upstream_bypass,
     });
 
     // Workdir
@@ -950,37 +969,44 @@ fn cmd_diff(args: PolicyDiffArgs) -> Result<()> {
 
     let net_vec_diffs = diff_string_vecs(&[
         (
-            "proxy_allow",
-            &p1.network.proxy_allow,
-            &p2.network.proxy_allow,
+            "allow_domain",
+            &p1.network.allow_domain,
+            &p2.network.allow_domain,
         ),
         (
-            "proxy_credentials",
-            &p1.network.proxy_credentials,
-            &p2.network.proxy_credentials,
+            "credentials",
+            &p1.network.credentials,
+            &p2.network.credentials,
         ),
         (
-            "external_proxy_bypass",
-            &p1.network.external_proxy_bypass,
-            &p2.network.external_proxy_bypass,
+            "upstream_bypass",
+            &p1.network.upstream_bypass,
+            &p2.network.upstream_bypass,
         ),
     ]);
 
-    let port1: Vec<String> = p1
+    let port1: Vec<String> = p1.network.open_port.iter().map(|p| p.to_string()).collect();
+    let port2: Vec<String> = p2.network.open_port.iter().map(|p| p.to_string()).collect();
+    let port_diffs = diff_string_vecs(&[("open_port", &port1, &port2)]);
+    let listen1: Vec<String> = p1
         .network
-        .port_allow
+        .listen_port
         .iter()
         .map(|p| p.to_string())
         .collect();
-    let port2: Vec<String> = p2
+    let listen2: Vec<String> = p2
         .network
-        .port_allow
+        .listen_port
         .iter()
         .map(|p| p.to_string())
         .collect();
-    let port_diffs = diff_string_vecs(&[("port_allow", &port1, &port2)]);
+    let listen_diffs = diff_string_vecs(&[("listen_port", &listen1, &listen2)]);
 
-    if !net_diffs.is_empty() || !net_vec_diffs.is_empty() || !port_diffs.is_empty() {
+    if !net_diffs.is_empty()
+        || !net_vec_diffs.is_empty()
+        || !port_diffs.is_empty()
+        || !listen_diffs.is_empty()
+    {
         any_diff = true;
         println!();
         println!("  {}:", theme::fg("Network", t.subtext).bold());
@@ -992,7 +1018,11 @@ fn cmd_diff(args: PolicyDiffArgs) -> Result<()> {
                 println!("    {}", theme::fg(add, t.green));
             }
         }
-        for (label, sign, val) in net_vec_diffs.iter().chain(port_diffs.iter()) {
+        for (label, sign, val) in net_vec_diffs
+            .iter()
+            .chain(port_diffs.iter())
+            .chain(listen_diffs.iter())
+        {
             let color = if *sign == "+" { t.green } else { t.red };
             println!(
                 "    {} {} {}",
@@ -1004,9 +1034,9 @@ fn cmd_diff(args: PolicyDiffArgs) -> Result<()> {
     }
 
     any_diff |= diff_scalar_option(
-        "external_proxy",
-        &p1.network.external_proxy,
-        &p2.network.external_proxy,
+        "upstream_proxy",
+        &p1.network.upstream_proxy,
+        &p2.network.upstream_proxy,
         t,
     );
 
@@ -1422,21 +1452,26 @@ fn diff_to_json(name1: &str, name2: &str, p1: &Profile, p2: &Profile) -> serde_j
                 "profile2": p2.network.resolved_network_profile(),
                 "changed": p1.network.resolved_network_profile() != p2.network.resolved_network_profile(),
             },
-            "proxy_allow": diff_vec(&p1.network.proxy_allow, &p2.network.proxy_allow),
-            "proxy_credentials": diff_vec(&p1.network.proxy_credentials, &p2.network.proxy_credentials),
-            "port_allow": {
-                "profile1": p1.network.port_allow,
-                "profile2": p2.network.port_allow,
-                "changed": p1.network.port_allow != p2.network.port_allow,
+            "allow_domain": diff_vec(&p1.network.allow_domain, &p2.network.allow_domain),
+            "credentials": diff_vec(&p1.network.credentials, &p2.network.credentials),
+            "open_port": {
+                "profile1": p1.network.open_port,
+                "profile2": p2.network.open_port,
+                "changed": p1.network.open_port != p2.network.open_port,
             },
-            "external_proxy": {
-                "profile1": p1.network.external_proxy,
-                "profile2": p2.network.external_proxy,
-                "changed": p1.network.external_proxy != p2.network.external_proxy,
+            "listen_port": {
+                "profile1": p1.network.listen_port,
+                "profile2": p2.network.listen_port,
+                "changed": p1.network.listen_port != p2.network.listen_port,
             },
-            "external_proxy_bypass": diff_vec(
-                &p1.network.external_proxy_bypass,
-                &p2.network.external_proxy_bypass,
+            "upstream_proxy": {
+                "profile1": p1.network.upstream_proxy,
+                "profile2": p2.network.upstream_proxy,
+                "changed": p1.network.upstream_proxy != p2.network.upstream_proxy,
+            },
+            "upstream_bypass": diff_vec(
+                &p1.network.upstream_bypass,
+                &p2.network.upstream_bypass,
             ),
             "custom_credentials": diff_custom_credentials_json(
                 &p1.network.custom_credentials,

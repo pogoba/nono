@@ -560,30 +560,50 @@ pub struct NetworkConfig {
     /// field inherits the base profile's value.
     #[serde(default, skip_serializing_if = "InheritableValue::is_inherit")]
     pub network_profile: InheritableValue<String>,
-    /// Additional hosts to allow through the proxy (on top of profile hosts).
-    /// Canonical profile key: `allow_proxy` (legacy `proxy_allow` also accepted).
-    #[serde(default, alias = "allow_proxy")]
-    pub proxy_allow: Vec<String>,
-    /// Credential services to enable via reverse proxy
-    #[serde(default)]
-    pub proxy_credentials: Vec<String>,
+    /// Additional domains to allow through the proxy (on top of profile hosts).
+    /// Canonical profile key: `allow_domain` (legacy `proxy_allow` and
+    /// `allow_proxy` are also accepted).
+    #[serde(
+        default,
+        rename = "allow_domain",
+        alias = "proxy_allow",
+        alias = "allow_proxy"
+    )]
+    pub allow_domain: Vec<String>,
+    /// Credential services to enable via reverse proxy.
+    /// Canonical profile key: `credentials` (legacy `proxy_credentials` accepted).
+    #[serde(default, rename = "credentials", alias = "proxy_credentials")]
+    pub credentials: Vec<String>,
     /// Localhost TCP ports to allow bidirectional IPC (connect + bind).
-    /// Equivalent to `--allow-port` CLI flag.
-    /// Canonical profile key: `allow_port` (legacy `port_allow` also accepted).
-    #[serde(default, alias = "allow_port")]
-    pub port_allow: Vec<u16>,
+    /// Equivalent to `--open-port` CLI flag.
+    /// Canonical profile key: `open_port` (legacy `port_allow` and `allow_port`
+    /// are also accepted).
+    #[serde(
+        default,
+        rename = "open_port",
+        alias = "port_allow",
+        alias = "allow_port"
+    )]
+    pub open_port: Vec<u16>,
+    /// TCP ports the sandboxed child may listen on.
+    /// Equivalent to `--listen-port` CLI flag.
+    #[serde(default)]
+    pub listen_port: Vec<u16>,
     /// Custom credential definitions for services not in network-policy.json.
-    /// Keys are service names (used with --proxy-credential), values define
+    /// Keys are service names (used with `--credential`), values define
     /// how to route and inject credentials for that service.
     #[serde(default)]
     pub custom_credentials: HashMap<String, CustomCredentialDef>,
-    /// External proxy address (host:port) for enterprise proxy passthrough.
-    #[serde(default)]
-    pub external_proxy: Option<String>,
-    /// Hosts to bypass the external proxy and route directly.
-    /// Supports exact hostnames and `*.` wildcard suffixes.
-    #[serde(default)]
-    pub external_proxy_bypass: Vec<String>,
+    /// Upstream proxy address (host:port) for enterprise proxy passthrough.
+    /// Canonical profile key: `upstream_proxy` (legacy `external_proxy`
+    /// accepted).
+    #[serde(default, rename = "upstream_proxy", alias = "external_proxy")]
+    pub upstream_proxy: Option<String>,
+    /// Hosts to bypass the upstream proxy and route directly.
+    /// Canonical profile key: `upstream_bypass` (legacy
+    /// `external_proxy_bypass` accepted).
+    #[serde(default, rename = "upstream_bypass", alias = "external_proxy_bypass")]
+    pub upstream_bypass: Vec<String>,
 }
 
 impl NetworkConfig {
@@ -594,9 +614,9 @@ impl NetworkConfig {
     /// Whether any profile setting requires proxy mode activation.
     pub fn has_proxy_flags(&self) -> bool {
         self.resolved_network_profile().is_some()
-            || !self.proxy_allow.is_empty()
-            || !self.proxy_credentials.is_empty()
-            || self.external_proxy.is_some()
+            || !self.allow_domain.is_empty()
+            || !self.credentials.is_empty()
+            || self.upstream_proxy.is_some()
     }
 }
 
@@ -1158,22 +1178,20 @@ fn merge_profiles(base: Profile, child: Profile) -> Profile {
                 .network
                 .network_profile
                 .merge(base.network.network_profile),
-            proxy_allow: dedup_append(&base.network.proxy_allow, &child.network.proxy_allow),
-            port_allow: dedup_append(&base.network.port_allow, &child.network.port_allow),
-            proxy_credentials: dedup_append(
-                &base.network.proxy_credentials,
-                &child.network.proxy_credentials,
-            ),
+            allow_domain: dedup_append(&base.network.allow_domain, &child.network.allow_domain),
+            open_port: dedup_append(&base.network.open_port, &child.network.open_port),
+            listen_port: dedup_append(&base.network.listen_port, &child.network.listen_port),
+            credentials: dedup_append(&base.network.credentials, &child.network.credentials),
             custom_credentials: {
                 let mut merged = base.network.custom_credentials;
                 merged.extend(child.network.custom_credentials);
                 merged
             },
-            // Child overrides base external proxy; if child has None, inherit base
-            external_proxy: child.network.external_proxy.or(base.network.external_proxy),
-            external_proxy_bypass: dedup_append(
-                &base.network.external_proxy_bypass,
-                &child.network.external_proxy_bypass,
+            // Child overrides base upstream proxy; if child has None, inherit base
+            upstream_proxy: child.network.upstream_proxy.or(base.network.upstream_proxy),
+            upstream_bypass: dedup_append(
+                &base.network.upstream_bypass,
+                &child.network.upstream_bypass,
             ),
         },
         env_credentials: SecretsConfig {
@@ -2231,12 +2249,13 @@ mod tests {
             network: NetworkConfig {
                 block: false,
                 network_profile: InheritableValue::Set("base-net".to_string()),
-                proxy_allow: vec!["base.example.com".to_string()],
-                port_allow: vec![3000],
-                proxy_credentials: vec!["base_cred".to_string()],
+                allow_domain: vec!["base.example.com".to_string()],
+                open_port: vec![3000],
+                listen_port: vec![4000],
+                credentials: vec!["base_cred".to_string()],
                 custom_credentials: HashMap::new(),
-                external_proxy: None,
-                external_proxy_bypass: Vec::new(),
+                upstream_proxy: None,
+                upstream_bypass: Vec::new(),
             },
             env_credentials: SecretsConfig {
                 mappings: {
@@ -2296,12 +2315,13 @@ mod tests {
             network: NetworkConfig {
                 block: false,
                 network_profile: InheritableValue::Inherit,
-                proxy_allow: vec!["child.example.com".to_string()],
-                port_allow: vec![3000, 5000],
-                proxy_credentials: vec![],
+                allow_domain: vec!["child.example.com".to_string()],
+                open_port: vec![3000, 5000],
+                listen_port: vec![4000, 6000],
+                credentials: vec![],
                 custom_credentials: HashMap::new(),
-                external_proxy: None,
-                external_proxy_bypass: Vec::new(),
+                upstream_proxy: None,
+                upstream_bypass: Vec::new(),
             },
             env_credentials: SecretsConfig {
                 mappings: {
@@ -2344,10 +2364,10 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_profiles_deduplicates_port_allow() {
+    fn test_merge_profiles_deduplicates_open_port() {
         let merged = merge_profiles(base_profile(), child_profile());
         // base has [3000], child has [3000, 5000] — merged should dedup to [3000, 5000]
-        assert_eq!(merged.network.port_allow, vec![3000, 5000]);
+        assert_eq!(merged.network.open_port, vec![3000, 5000]);
     }
 
     #[test]
@@ -2791,7 +2811,7 @@ mod tests {
             merged.network.resolved_network_profile(),
             base.network.resolved_network_profile()
         );
-        assert_eq!(merged.network.proxy_allow, base.network.proxy_allow);
+        assert_eq!(merged.network.allow_domain, base.network.allow_domain);
         // Should inherit rollback config
         assert_eq!(
             merged.rollback.exclude_patterns,
@@ -3042,15 +3062,48 @@ mod tests {
                 "network": {
                     "block": true,
                     "allow_proxy": ["api.openai.com"],
-                    "allow_port": [3000]
+                    "allow_port": [3000],
+                    "external_proxy": "squid.corp:3128"
                 }
             }"#,
         )
         .expect("parse profile with supported aliases");
 
         assert!(profile.network.block);
-        assert_eq!(profile.network.proxy_allow, vec!["api.openai.com"]);
-        assert_eq!(profile.network.port_allow, vec![3000]);
+        assert_eq!(profile.network.allow_domain, vec!["api.openai.com"]);
+        assert_eq!(profile.network.open_port, vec![3000]);
+        assert_eq!(
+            profile.network.upstream_proxy.as_deref(),
+            Some("squid.corp:3128")
+        );
+    }
+
+    #[test]
+    fn test_network_config_serializes_new_names() {
+        let profile: Profile = serde_json::from_str(
+            r#"{
+                "meta": { "name": "canonical" },
+                "network": {
+                    "allow_domain": ["api.openai.com"],
+                    "credentials": ["openai"],
+                    "open_port": [3000],
+                    "listen_port": [4000],
+                    "upstream_proxy": "squid.corp:3128",
+                    "upstream_bypass": ["internal.corp"]
+                }
+            }"#,
+        )
+        .expect("parse profile with canonical names");
+
+        let serialized = serde_json::to_value(&profile).expect("serialize profile");
+        let network = serialized["network"].as_object().expect("network object");
+
+        assert!(network.contains_key("allow_domain"));
+        assert!(network.contains_key("credentials"));
+        assert!(network.contains_key("open_port"));
+        assert!(network.contains_key("listen_port"));
+        assert!(network.contains_key("upstream_proxy"));
+        assert!(network.contains_key("upstream_bypass"));
     }
 
     #[test]
