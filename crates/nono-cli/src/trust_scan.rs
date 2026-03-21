@@ -19,9 +19,11 @@ use std::path::{Path, PathBuf};
 /// Checks `root` for `trust-policy.json`, then user config dir, merging if both
 /// exist. Falls back to default policy (deny enforcement) if none found.
 ///
-/// When `trust_override` is false, each discovered policy file must have a valid
-/// `.bundle` sidecar with a verified signature. Unsigned or tampered policies
-/// are rejected.
+/// When `trust_override` is false, discovered policy files are verified lazily:
+/// the scan first checks whether the current tree contains any signed trust
+/// artifacts that require cryptographic verification. This avoids unnecessary
+/// keystore access in directories that only contain unsigned files, or no trust
+/// artifacts at all.
 ///
 /// # Errors
 ///
@@ -29,32 +31,24 @@ use std::path::{Path, PathBuf};
 /// `NonoError::TrustVerification` if signature verification fails.
 pub fn load_scan_policy(root: &Path, trust_override: bool) -> Result<TrustPolicy> {
     let cwd_policy = root.join("trust-policy.json");
+    let project_policy_path = cwd_policy.exists().then_some(cwd_policy);
 
-    let project = if cwd_policy.exists() {
-        if !trust_override {
-            verify_policy_signature(&cwd_policy)?;
-        }
-        Some(trust::load_policy_from_file(&cwd_policy)?)
+    let project = if let Some(ref policy_path) = project_policy_path {
+        Some(trust::load_policy_from_file(policy_path)?)
     } else {
         None
     };
 
     let user_path = crate::trust_cmd::user_trust_policy_path();
+    let user_policy_path = user_path.as_ref().filter(|path| path.exists());
 
-    let user = if let Some(ref path) = user_path {
-        if path.exists() {
-            if !trust_override {
-                verify_policy_signature(path)?;
-            }
-            Some(trust::load_policy_from_file(path)?)
-        } else {
-            None
-        }
+    let user = if let Some(path) = user_policy_path {
+        Some(trust::load_policy_from_file(path)?)
     } else {
         None
     };
 
-    match (user, project) {
+    let effective = match (user, project) {
         (Some(u), Some(p)) => trust::merge_policies(&[u, p]),
         (Some(u), None) => Ok(u),
         (None, Some(p)) => {
@@ -80,7 +74,48 @@ pub fn load_scan_policy(root: &Path, trust_override: bool) -> Result<TrustPolicy
             Ok(p)
         }
         (None, None) => Ok(TrustPolicy::default()),
+    }?;
+
+    if !trust_override && scan_has_signed_artifacts(root, &effective)? {
+        verify_scan_policy_signatures(
+            project_policy_path.as_deref(),
+            user_policy_path.map(PathBuf::as_path),
+        )?;
     }
+
+    Ok(effective)
+}
+
+/// Return whether the current scan root contains any signed trust artifacts.
+///
+/// This probes for per-file `.bundle` sidecars for included files and for the
+/// multi-subject `.nono-trust.bundle`. Unsigned files are still scanned later,
+/// but they do not require keystore access up front.
+fn scan_has_signed_artifacts(scan_root: &Path, policy: &TrustPolicy) -> Result<bool> {
+    if trust::multi_subject_bundle_path(scan_root).exists() {
+        return Ok(true);
+    }
+
+    let files = trust::find_included_files(policy, scan_root)?;
+    Ok(files
+        .iter()
+        .any(|file_path| trust::bundle_path_for(file_path).exists()))
+}
+
+/// Verify any trust policies already discovered for the current scan.
+fn verify_scan_policy_signatures(
+    project_policy_path: Option<&Path>,
+    user_policy_path: Option<&Path>,
+) -> Result<()> {
+    if let Some(policy_path) = project_policy_path {
+        verify_policy_signature(policy_path)?;
+    }
+
+    if let Some(policy_path) = user_policy_path {
+        verify_policy_signature(policy_path)?;
+    }
+
+    Ok(())
 }
 
 /// Verify that a trust policy file has a valid cryptographic signature.
@@ -943,6 +978,42 @@ mod tests {
     }
 
     #[test]
+    fn scan_has_signed_artifacts_ignores_unsigned_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_name = "arbitrary-instructions.txt";
+        std::fs::write(dir.path().join(file_name), "content").unwrap();
+
+        let policy = TrustPolicy {
+            includes: vec![file_name.to_string()],
+            ..TrustPolicy::default()
+        };
+
+        let has_signed_artifacts = scan_has_signed_artifacts(dir.path(), &policy).unwrap();
+        assert!(!has_signed_artifacts);
+    }
+
+    #[test]
+    fn scan_has_signed_artifacts_detects_per_file_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_name = "arbitrary-instructions.txt";
+        let file_path = dir.path().join(file_name);
+        std::fs::write(&file_path, "content").unwrap();
+
+        let key_pair = trust::generate_signing_key().unwrap();
+        let key_id = trust::key_id_hex(&key_pair).unwrap();
+        let bundle_json = trust::sign_instruction_file(&file_path, &key_pair, &key_id).unwrap();
+        std::fs::write(trust::bundle_path_for(&file_path), bundle_json).unwrap();
+
+        let policy = TrustPolicy {
+            includes: vec![file_name.to_string()],
+            ..TrustPolicy::default()
+        };
+
+        let has_signed_artifacts = scan_has_signed_artifacts(dir.path(), &policy).unwrap();
+        assert!(has_signed_artifacts);
+    }
+
+    #[test]
     fn scan_unsigned_file_warn_enforcement_proceeds() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("SKILLS.md"), "# Skills").unwrap();
@@ -1090,6 +1161,35 @@ mod tests {
 
         let policy = load_scan_policy(dir.path(), true).unwrap();
         assert_eq!(policy.enforcement, Enforcement::Warn);
+
+        match orig_xdg {
+            Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn load_scan_policy_skips_policy_verification_without_signed_artifacts() {
+        let scan_dir = tempfile::tempdir().unwrap();
+        let include_pattern = "*.arbitrary";
+        let orig_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let xdg_dir = scan_dir.path().join("xdg");
+        std::fs::create_dir_all(&xdg_dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        std::fs::write(scan_dir.path().join("notes.arbitrary"), "unsigned").unwrap();
+
+        let project_policy_path = scan_dir.path().join("trust-policy.json");
+        std::fs::write(
+            &project_policy_path,
+            format!(
+                r#"{{"version":1,"includes":["{include_pattern}"],"publishers":[],"blocklist":{{"digests":[],"publishers":[]}},"enforcement":"warn"}}"#
+            ),
+        )
+        .unwrap();
+
+        let policy = load_scan_policy(scan_dir.path(), false).unwrap();
+        assert!(policy.includes.contains(&include_pattern.to_string()));
 
         match orig_xdg {
             Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
