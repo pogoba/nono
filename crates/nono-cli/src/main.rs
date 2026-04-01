@@ -2416,7 +2416,10 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         crate::capability_ext::default_profile_groups()?
     };
     let loaded_policy = policy::load_embedded_policy()?;
-    let deny_paths = policy::resolve_deny_paths_for_groups(&loaded_policy, &active_groups)?;
+    let mut deny_paths = policy::resolve_deny_paths_for_groups(&loaded_policy, &active_groups)?;
+    // Remove paths exempted via --override-deny (or profile override_deny) so the
+    // second overlap check is consistent with the first one in finalize_caps().
+    deny_paths.retain(|dp| !override_deny_paths.iter().any(|o| dp.starts_with(o)));
     policy::validate_deny_overlaps(&deny_paths, &caps)?;
     let protected_roots = protected_paths::ProtectedRoots::from_defaults()?;
     protected_paths::validate_caps_against_protected_roots(&caps, protected_roots.as_paths())?;
