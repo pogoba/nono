@@ -8,7 +8,88 @@ use landlock::{
     Ruleset, RulesetAttr, RulesetCreatedAttr, Scope, ABI,
 };
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
+
+/// Cached result of the CAP_SYS_ADMIN check. The effective capability set
+/// cannot change within a single nono process (we never drop or gain caps
+/// after startup), so querying once and caching is safe.
+static HAS_CAP_SYS_ADMIN: AtomicBool = AtomicBool::new(false);
+static CAP_SYS_ADMIN_CHECKED: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` if the current thread's effective capability set includes
+/// `CAP_SYS_ADMIN`. When present, both Landlock's `restrict_self()` and
+/// seccomp's `SECCOMP_SET_MODE_FILTER` work without `PR_SET_NO_NEW_PRIVS`,
+/// which allows setuid binaries (e.g. `sudo`) to function inside the sandbox.
+fn has_cap_sys_admin() -> bool {
+    if CAP_SYS_ADMIN_CHECKED.load(Ordering::Relaxed) {
+        return HAS_CAP_SYS_ADMIN.load(Ordering::Relaxed);
+    }
+
+    // Linux capability v3 structures (needed for 64-bit capability sets).
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+
+    // _LINUX_CAPABILITY_VERSION_3 — supports capabilities > 31.
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    // CAP_SYS_ADMIN is capability 21, which lives in the first u32.
+    const CAP_SYS_ADMIN_BIT: u32 = 1 << 21;
+
+    let mut header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0, // current thread
+    };
+    let mut data = [
+        CapData { effective: 0, permitted: 0, inheritable: 0 },
+        CapData { effective: 0, permitted: 0, inheritable: 0 },
+    ];
+
+    // SAFETY: capget with v3 header and two CapData entries is well-defined.
+    // Both structures are stack-allocated and outlive the syscall.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_capget,
+            &mut header as *mut CapHeader,
+            data.as_mut_ptr(),
+        )
+    };
+
+    let result = ret == 0 && (data[0].effective & CAP_SYS_ADMIN_BIT) != 0;
+    HAS_CAP_SYS_ADMIN.store(result, Ordering::Relaxed);
+    CAP_SYS_ADMIN_CHECKED.store(true, Ordering::Relaxed);
+    if result {
+        info!("CAP_SYS_ADMIN detected — skipping PR_SET_NO_NEW_PRIVS to allow setuid binaries");
+    }
+    result
+}
+
+/// Set `PR_SET_NO_NEW_PRIVS` unless `CAP_SYS_ADMIN` is present (which makes
+/// seccomp and Landlock's `restrict_self()` work without the flag).
+fn set_no_new_privs_if_needed() -> Result<()> {
+    if has_cap_sys_admin() {
+        debug!("Skipping PR_SET_NO_NEW_PRIVS (CAP_SYS_ADMIN is set)");
+        return Ok(());
+    }
+    // SAFETY: prctl with PR_SET_NO_NEW_PRIVS is process-local and takes only
+    // scalar arguments.
+    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if ret != 0 {
+        return Err(NonoError::SandboxInit(format!(
+            "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
 
 /// Detected Landlock ABI version with feature query methods.
 ///
@@ -643,6 +724,11 @@ pub fn apply_with_abi(caps: &CapabilitySet, abi: &DetectedAbi) -> Result<Seccomp
     }
 
     // Apply the ruleset - THIS IS IRREVERSIBLE
+    // When CAP_SYS_ADMIN is present, tell Landlock not to set no_new_privs
+    // so that setuid binaries (e.g. sudo) can still function inside the sandbox.
+    if has_cap_sys_admin() {
+        ruleset = ruleset.set_no_new_privs(false);
+    }
     let status = ruleset
         .restrict_self()
         .map_err(|e| NonoError::SandboxInit(format!("Failed to restrict self: {}", e)))?;
@@ -942,19 +1028,7 @@ pub fn install_seccomp_notify() -> Result<std::os::fd::OwnedFd> {
     };
 
     // seccomp(SET_MODE_FILTER) requires either CAP_SYS_ADMIN or no_new_privs.
-    // We use no_new_privs (unprivileged) which prevents gaining privileges via
-    // setuid/setgid binaries. This is a one-way flag that cannot be unset, and
-    // Landlock's restrict_self() sets it too, so this adds no new restriction.
-    // SAFETY: prctl with PR_SET_NO_NEW_PRIVS is always safe to call.
-    // SAFETY: `prctl(PR_SET_NO_NEW_PRIVS)` is process-local, takes only scalar
-    // arguments here, and does not dereference pointers.
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err(NonoError::SandboxInit(format!(
-            "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
+    set_no_new_privs_if_needed()?;
 
     // Try with WAIT_KILLABLE_RECV first (kernel 5.19+) for Go runtime compatibility.
     // Falls back without it if the kernel doesn't support it.
@@ -1090,15 +1164,8 @@ pub fn install_seccomp_block_network() -> Result<()> {
         filter: filter.as_ptr(),
     };
 
-    // SAFETY: `prctl(PR_SET_NO_NEW_PRIVS)` is process-local, takes only scalar
-    // arguments here, and does not dereference pointers.
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err(NonoError::SandboxInit(format!(
-            "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
+    // seccomp(SET_MODE_FILTER) requires either CAP_SYS_ADMIN or no_new_privs.
+    set_no_new_privs_if_needed()?;
 
     // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the provided BPF program
     // during the syscall. `prog` points to a stack-allocated filter array that
@@ -1805,16 +1872,8 @@ pub fn install_seccomp_proxy_filter(has_bind_ports: bool) -> Result<std::os::fd:
         filter: filter.as_ptr(),
     };
 
-    // PR_SET_NO_NEW_PRIVS should already be set by the openat-notify filter
-    // or by Landlock restrict_self(). Set it again defensively (idempotent).
-    // SAFETY: prctl with PR_SET_NO_NEW_PRIVS is always safe to call.
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err(NonoError::SandboxInit(format!(
-            "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
+    // seccomp(SET_MODE_FILTER) requires either CAP_SYS_ADMIN or no_new_privs.
+    set_no_new_privs_if_needed()?;
 
     // Try with WAIT_KILLABLE_RECV first (kernel 5.19+).
     let flags = SECCOMP_FILTER_FLAG_NEW_LISTENER | SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV;
